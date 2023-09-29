@@ -2,13 +2,14 @@ package main
 
 import (
 	"embed"
-	"github.com/gin-gonic/contrib/static"
-	"github.com/gin-gonic/gin"
 	"io"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
+
+	"github.com/gin-gonic/contrib/static"
+	"github.com/gin-gonic/gin"
 )
 
 var eventStream = make(chan string)
@@ -72,10 +73,7 @@ type embedFileSystem struct {
 
 func (e embedFileSystem) Exists(prefix string, path string) bool {
 	_, err := e.Open(path)
-	if err != nil {
-		return false
-	}
-	return true
+	return err == nil
 }
 
 func EmbedFolder(fsEmbed embed.FS, targetPath string) static.ServeFileSystem {
