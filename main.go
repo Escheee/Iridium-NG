@@ -3,11 +3,11 @@ package main
 import (
 	"encoding/json"
 	"flag"
-	"github.com/fatih/color"
-	"github.com/google/gopacket/pcap"
-	"io/ioutil"
 	"log"
 	"os"
+
+	"github.com/fatih/color"
+	"github.com/google/gopacket/pcap"
 )
 
 type Config struct {
@@ -21,7 +21,7 @@ var listDevice = flag.Bool("l", false, "List the network devices on this machine
 var ip = flag.String("ip", "", "Designate the network devices to capture by IP")
 
 func main() {
-	bytes, err := ioutil.ReadFile("./config.json")
+	bytes, err := os.ReadFile("./config.json")
 	if err != nil {
 		log.Fatalln("Could not load ./config.json", err)
 	}

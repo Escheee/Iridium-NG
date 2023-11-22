@@ -2,13 +2,14 @@ package main
 
 import (
 	"embed"
-	"github.com/gin-gonic/contrib/static"
-	"github.com/gin-gonic/gin"
 	"io"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
+
+	"github.com/gin-gonic/contrib/static"
+	"github.com/gin-gonic/gin"
 )
 
 var eventStream = make(chan string)
@@ -45,12 +46,12 @@ func apiUpload(c *gin.Context) {
 		log.Println("Could not handle upload file", err)
 		return
 	}
-	err = c.SaveUploadedFile(file, os.TempDir()+file.Filename)
+	err = c.SaveUploadedFile(file, os.TempDir()+"/"+file.Filename)
 	if err != nil {
 		log.Println("Could not handle upload file", err)
 		return
 	}
-	go openPcap(os.TempDir() + file.Filename)
+	go openPcap(os.TempDir() + "/" + file.Filename)
 }
 
 func stream(c *gin.Context) {
@@ -72,10 +73,7 @@ type embedFileSystem struct {
 
 func (e embedFileSystem) Exists(prefix string, path string) bool {
 	_, err := e.Open(path)
-	if err != nil {
-		return false
-	}
-	return true
+	return err == nil
 }
 
 func EmbedFolder(fsEmbed embed.FS, targetPath string) static.ServeFileSystem {

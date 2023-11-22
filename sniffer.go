@@ -4,6 +4,12 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"log"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
 	"github.com/fatih/color"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -11,12 +17,6 @@ import (
 	"github.com/google/gopacket/pcapgo"
 	"github.com/jhump/protoreflect/dynamic"
 	"github.com/xtaci/kcp-go"
-	"io/ioutil"
-	"log"
-	"os"
-	"strconv"
-	"strings"
-	"time"
 )
 
 type Packet struct {
@@ -90,7 +90,7 @@ func closeHandle() {
 
 func readKeys() {
 	var initialKeyJson map[uint16]string
-	file, err := ioutil.ReadFile("./data/Keys.json")
+	file, err := os.ReadFile("./data/Keys.json")
 	if err != nil {
 		log.Fatal("Could not load initial key @ ./data/Keys.json #1", err)
 	}
@@ -324,9 +324,9 @@ func logPacket(packet *Packet) {
 		len(packet.Raw),
 	)
 
-	if packet.PacketId == unionCmdNotifyPacketId {
-		logUnionCmdNotifyPacket(packet)
-	}
+	// if packet.PacketId == unionCmdNotifyPacketId {
+	// 	logUnionCmdNotifyPacket(packet)
+	// }
 }
 
 func logUnionCmdNotifyPacket(packet *Packet) {

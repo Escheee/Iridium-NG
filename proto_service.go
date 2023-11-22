@@ -3,11 +3,13 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"log"
+	"os"
+
 	"github.com/jhump/protoreflect/desc"
 	"github.com/jhump/protoreflect/desc/protoparse"
 	"github.com/jhump/protoreflect/dynamic"
-	"io/ioutil"
-	"log"
+	"github.com/syucream/protodump"
 )
 
 var msgMap = make(map[string]*desc.MessageDescriptor)
@@ -16,7 +18,7 @@ var packetNameMap = make(map[string]uint16)
 var protoParser = protoparse.Parser{}
 
 func InitProto() {
-	packetIdFile, _ := ioutil.ReadFile("./data/packetIds.json")
+	packetIdFile, _ := os.ReadFile("./data/packetIds.json")
 	err := json.Unmarshal(packetIdFile, &packetIdMap)
 	if err != nil {
 		log.Fatalln("Could not load ./data/packetIds.json", err)
@@ -73,7 +75,16 @@ func parseProto(id uint16, data []byte) (*dynamic.Message, error) {
 func parseProtoToJson(id uint16, data []byte) string {
 	dMsg, err := parseProto(id, data)
 	if err != nil {
-		return ""
+		msg := protodump.Message{}
+		err := protodump.Unmarshal(data, msg)
+		if err != nil {
+			return ""
+		}
+		jsonStr, err := json.Marshal(msg)
+		if err != nil {
+			return ""
+		}
+		return string(jsonStr)
 	}
 
 	marshalJSON, err := dMsg.MarshalJSON()
