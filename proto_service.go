@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"os"
+	"strconv"
 
 	"github.com/jhump/protoreflect/desc"
 	"github.com/jhump/protoreflect/desc/protoparse"
@@ -56,7 +57,7 @@ func GetProtoById(id uint16) *desc.MessageDescriptor {
 func GetProtoNameById(id uint16) string {
 	protoName, ok := packetIdMap[id]
 	if !ok {
-		return ""
+		return strconv.Itoa(int(id))
 	}
 	return protoName
 }
