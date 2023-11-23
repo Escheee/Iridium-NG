@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"log"
 	"os"
@@ -38,11 +40,17 @@ type UniCmdItem struct {
 
 var getPlayerTokenRspPacketId uint16
 var unionCmdNotifyPacketId uint16
+var noMetadataPacketId uint16
 
 var initialKey = make(map[uint16][]byte)
 var sessionSeed uint64
 var serverSeed uint64
 var sentMs uint64
+
+var cmdIdKey uint16
+var metaLenKey uint16
+var packetList []*Packet
+var keyPacket *Packet
 
 var captureHandler *pcap.Handle
 var kcpMap map[string]*kcp.KCP
@@ -109,6 +117,7 @@ func readKeys() {
 
 	getPlayerTokenRspPacketId = packetNameMap["GetPlayerTokenRsp"]
 	unionCmdNotifyPacketId = packetNameMap["UnionCmdNotify"]
+	noMetadataPacketId = 26219
 }
 
 func startSniffer() {
@@ -186,7 +195,7 @@ func handleKcp(packet *Packet) {
 			FromServer: packet.FromServer,
 			Raw:        kcpBytes,
 		}
-		handleProtoPacket(kcpPacket)
+		findKey(kcpPacket)
 		size = kcpInstance.PeekSize()
 	}
 	kcpInstance.Update()
@@ -196,6 +205,10 @@ func handleSpecialPacket(packet *Packet) {
 	sessionSeed = 0
 	serverSeed = 0
 	sentMs = 0
+	cmdIdKey = 0
+	metaLenKey = 0
+	packetList = nil
+	keyPacket = nil
 	switch binary.BigEndian.Uint32(packet.Raw[:4]) {
 	case 0xFF:
 		packet.Object = "Hamdshanke pls."
@@ -209,13 +222,14 @@ func handleSpecialPacket(packet *Packet) {
 	}
 }
 
-func handleProtoPacket(packet *Packet) {
+func findKey(packet *Packet) {
 	key := binary.BigEndian.Uint16(packet.Raw[:4])
 	key = key ^ 0x4567
 	var xorPad []byte
 
+	packetList = append(packetList, packet)
 	xorPad = initialKey[key]
-	if xorPad == nil {
+	if xorPad == nil && cmdIdKey == 0 {
 		seed := sessionSeed
 		if seed == 0 {
 			seed = sentMs
@@ -223,88 +237,152 @@ func handleProtoPacket(packet *Packet) {
 		seed, xorPad = bruteforce(seed, serverSeed, packet.Raw)
 		if xorPad == nil {
 			log.Println("Could not found key to decrypt", key)
-			closeHandle()
+			if cmdIdKey == 0 {
+				cmdIdRaw := binary.BigEndian.Uint16(packet.Raw[2:4])
+				cmdId := packetNameMap["PlayerLoginReq"]
+				cmdIdKey = cmdId ^ cmdIdRaw
+			}
+			return
+			// closeHandle()
 		}
 		if sessionSeed == 0 {
 			sessionSeed = seed
 		}
 		initialKey[key] = xorPad
+	} else if cmdIdKey != 0 && metaLenKey == 0 {
+		cmdId := binary.BigEndian.Uint16(packet.Raw[2:4]) ^ cmdIdKey
+		if cmdId == packetNameMap["WindSeedType1Notify"] {
+			keyPacket = packet
+		}
+		if cmdId == noMetadataPacketId {
+			metaLenKey = 0 ^ binary.BigEndian.Uint16(packet.Raw[4:6])
+		}
+		return
+	} else if cmdIdKey != 0 && metaLenKey != 0 && xorPad == nil {
+		cmdId := binary.BigEndian.Uint16(packet.Raw[2:4]) ^ cmdIdKey
+		if cmdId == packetNameMap["WindSeedType1Notify"] || keyPacket != nil {
+			if keyPacket == nil {
+				keyPacket = packet
+			}
+			metaLen := metaLenKey ^ binary.BigEndian.Uint16(keyPacket.Raw[4:6])
+			packetRaw := keyPacket.Raw[10+metaLen : len(keyPacket.Raw)-2]
+			xorDecrypt(packetRaw, initialKey[packetNameMap["WindSeedType1Notify"]])
+			var buf bytes.Buffer
+			binary.Write(&buf, binary.BigEndian, binary.BigEndian.Uint16(keyPacket.Raw[0:2])^0x4567)
+			binary.Write(&buf, binary.BigEndian, cmdIdKey)
+			binary.Write(&buf, binary.BigEndian, metaLenKey)
+			prefix := buf.Bytes()
+			packetString := hex.EncodeToString(packetRaw)
+			combinedKeyFeature := hex.EncodeToString(prefix)
+
+			lastIndex := -1
+			index := 0
+			dict := make(map[string]int)
+
+			for {
+				index = strings.Index(packetString[lastIndex+1:], combinedKeyFeature)
+				if index == -1 {
+					break
+				}
+				index += lastIndex + 1
+				if lastIndex > 0 && index-lastIndex == 4096*2 {
+					potentialKey := packetString[lastIndex:index]
+					dict[potentialKey]++
+				}
+				lastIndex = index
+			}
+
+			if len(dict) > 0 {
+				maxKey := ""
+				maxValue := 0
+				for k, v := range dict {
+					if v > maxValue {
+						maxKey = k
+						maxValue = v
+					}
+				}
+				log.Printf("Key: %s Count: %d\n", maxKey[:32], maxValue)
+				xorPad, _ = hex.DecodeString(maxKey)
+				initialKey[key] = xorPad
+				return
+			}
+		} else {
+			return
+		}
 	}
 
+	if xorPad == nil {
+		log.Println("Could not found packet to force decrypt", key)
+		closeHandle()
+	}
+
+	for len(packetList) > 0 {
+		p := packetList[0]
+		packetList = packetList[1:]
+
+		handleProtoPacket(p, xorPad)
+	}
+}
+
+func handleProtoPacket(packet *Packet, xorPad []byte) {
 	xorDecrypt(packet.Raw, xorPad)
 
 	packetId := binary.BigEndian.Uint16(packet.Raw[2:4])
 	metaLen := binary.BigEndian.Uint16(packet.Raw[4:6])
 	meta := packet.Raw[10 : 10+metaLen]
 
+	packet.PacketId = packetId
+	packet.PacketName = GetProtoNameById(packetId)
+	packet.Meta = meta
 	packet.Raw = removeHeaderForParse(packet.Raw)
-	objectInterface := parseProtoToInterface(packetId, packet.Raw)
-	objMap := (*objectInterface).(map[string]interface{})
+	packet.Object = parseProtoToInterface(packetId, packet.Raw)
 
 	if !packet.FromServer && sentMs == 0 && len(packet.Raw) > 300 {
 		metadataJson := parseProtoToInterface(0, meta)
 		metadataMap := (*metadataJson).(map[string]interface{})
 		sentMs = uint64(metadataMap["6"].(float64))
 	} else if packet.FromServer && sessionSeed == 0 && len(packet.Raw) > 600 {
-		var serverRandKey string
-		for _, v := range objMap {
-			switch v := v.(type) {
-			case string:
-				serverRandKey = v
-			case map[string]interface{}:
-				if s, ok := v["__string"]; ok {
-					serverRandKey, _ = s.(string)
-				}
-			}
-			if strings.HasSuffix(serverRandKey, "==") {
-				seed, err := base64.StdEncoding.DecodeString(serverRandKey)
-				if err != nil {
-					log.Println("Failed to decode server rand key")
-					continue
-				}
-				seed, err = decrypt("data/private_key_4.pem", seed)
-				if err != nil {
-					log.Println("Failed to decrypt server rand key")
-					continue
-				}
-				serverSeed = binary.BigEndian.Uint64(seed)
-				log.Println("Server seed", serverSeed)
-				break
-			}
-		}
-
+		handleGetPlayerTokenRspPacket(packet)
 	} else if unionCmdNotifyPacketId != 0 && packetId == unionCmdNotifyPacketId {
-		cmdList := objMap["cmdList"].([]interface{})
-		cmdListJson := make([]*UniCmdItem, len(cmdList))
-		for i, item := range cmdList {
-			msgItem := item.(map[string]interface{})
-			itemPacketId := uint16(msgItem["messageId"].(float64))
-			itemData := []byte(msgItem["body"].(string))
-
-			childJson := parseProtoToInterface(itemPacketId, itemData)
-
-			cmdListJson[i] = &UniCmdItem{
-				PacketId:   itemPacketId,
-				PacketName: GetProtoNameById(itemPacketId),
-				Object:     childJson,
-				Raw:        itemData,
-			}
-		}
-		temp := interface{}(cmdListJson)
-		objectInterface = &temp
+		packet.Object = handleUnionCmdNotifyPacket(packet)
 	}
-
-	packet.Object = objectInterface
-	packet.PacketId = metaLen
-	packet.PacketName = GetProtoNameById(packetId)
-	packet.Meta = meta
 
 	buildPacketToSend(packet)
 }
 
-func handleUnionCmdNotifyPacket(data []byte, packetId uint16, objectJson interface{}) ([]byte, interface{}) {
-	data = removeHeaderForParse(data)
-	dMsg, err := parseProto(packetId, data)
+func handleGetPlayerTokenRspPacket(packet *Packet) {
+	var serverRandKey string
+	objectInterface := packet.Object.(*interface{})
+	objMap := (*objectInterface).(map[string]interface{})
+	for _, v := range objMap {
+		switch v := v.(type) {
+		case string:
+			serverRandKey = v
+		case map[string]interface{}:
+			if s, ok := v["__string"]; ok {
+				serverRandKey, _ = s.(string)
+			}
+		}
+		if strings.HasSuffix(serverRandKey, "==") {
+			seed, err := base64.StdEncoding.DecodeString(serverRandKey)
+			if err != nil {
+				log.Println("Failed to decode server rand key")
+				continue
+			}
+			seed, err = decrypt("data/private_key_4.pem", seed)
+			if err != nil {
+				log.Println("Failed to decrypt server rand key")
+				continue
+			}
+			serverSeed = binary.BigEndian.Uint64(seed)
+			log.Println("Server seed", serverSeed)
+			break
+		}
+	}
+}
+
+func handleUnionCmdNotifyPacket(packet *Packet) interface{} {
+	dMsg, err := parseProto(packet.PacketId, packet.Raw)
 	if err != nil {
 		log.Println("Could not parse UnionCmdNotify proto", err)
 	}
@@ -325,8 +403,8 @@ func handleUnionCmdNotifyPacket(data []byte, packetId uint16, objectJson interfa
 			Raw:        itemData,
 		}
 	}
-	objectJson = cmdListJson
-	return data, objectJson
+	var objectJson interface{} = cmdListJson
+	return objectJson
 }
 
 func buildPacketToSend(packet *Packet) {
