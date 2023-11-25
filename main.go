@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	help "iridium/helper"
 	"log"
 	"os"
 
@@ -68,6 +69,6 @@ func main() {
 		}
 	}
 
-	go InitProto()
+	go help.InitProto()
 	startServer()
 }

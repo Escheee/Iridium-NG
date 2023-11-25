@@ -2,7 +2,7 @@
 //   - https://referencesource.microsoft.com/#mscorlib/system/random.cs
 //   - https://github.com/HirbodBehnam/CSharpRandom/blob/master/random.go
 //   - https://github.com/MoonlightPS/Iridium-gidra/blob/master/gover/utils/prng.go
-package main
+package helper
 
 import (
 	"math"
